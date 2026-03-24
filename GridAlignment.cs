@@ -59,8 +59,13 @@ namespace MegaBuilder
             var piece = ghost.GetComponent<Piece>();
             if (piece == null) return;
 
+            // Skip grid snapping for doors — they rely on vanilla's snap-point system
+            // to attach to doorframes. The IsAimingAtPiece raycast passes through doorway
+            // openings (no collider), causing grid snap to override correct placement.
+            if (ghost.GetComponentInChildren<Door>() != null) return;
+
             // Skip grid snapping when the player is aiming at an existing build piece.
-            // This lets vanilla handle all piece-to-piece connections (doors, corners, walls)
+            // This lets vanilla handle all piece-to-piece connections (corners, walls, etc.)
             // and only applies grid snapping when building in open space.
             if (IsAimingAtPiece()) return;
 
