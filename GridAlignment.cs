@@ -150,8 +150,6 @@ namespace MegaBuilder
                     DebugLog($"    Snap point '{sp.name}': local=({localPos.x:F3}, {localPos.y:F3}, {localPos.z:F3})");
                 }
 
-                bool snappedToPiece = IsGhostSnappedToPiece(ghost, piece, true);
-                DebugLog($"  IsGhostSnappedToPiece: {snappedToPiece}");
                 DebugLog($"  Ghost position (post-all-mods): ({ghost.transform.position.x:F3}, {ghost.transform.position.y:F3}, {ghost.transform.position.z:F3})");
                 DebugLog($"  Ghost rotation: ({ghost.transform.rotation.eulerAngles.x:F1}, {ghost.transform.rotation.eulerAngles.y:F1}, {ghost.transform.rotation.eulerAngles.z:F1})");
                 if (_hasSavedDoorPosition)
@@ -179,59 +177,8 @@ namespace MegaBuilder
             if (!MegaBuilderPlugin.EnableGridAlignment.Value) return;
             if (!_alignToggled) return;
 
-            // Skip grid snapping when vanilla has snap-connected this ghost to an
-            // existing piece's snap point. This preserves wall-to-wall, corner, etc.
-            // connections while allowing grid snapping when building near (but not
-            // snapped to) existing pieces.
-            if (IsGhostSnappedToPiece(ghost, piece, shouldLogDetails))
-            {
-                if (shouldLogDetails) DebugLog($"  >> SKIPPED: Ghost snap-connected to existing piece, using vanilla snapping");
-                return;
-            }
-
-            if (shouldLogDetails) DebugLog($"  >> APPLYING grid snap (default align: {_defaultAlignment / 100f})");
+            if (shouldLogDetails) DebugLog($"  >> APPLYING grid snap (grid size: {_defaultAlignment / 100f})");
             SnapToGrid(ghost, piece, shouldLogDetails);
-        }
-
-        /// <summary>
-        /// Check if the ghost piece's snap points are aligned with any nearby
-        /// placed piece's snap points. If so, vanilla has snap-connected them
-        /// and we should not override with grid alignment.
-        /// </summary>
-        private static bool IsGhostSnappedToPiece(GameObject ghost, Piece ghostPiece, bool debugLog)
-        {
-            var ghostSnaps = new List<Transform>();
-            ghostPiece.GetSnapPoints(ghostSnaps);
-            if (ghostSnaps.Count == 0) return false;
-
-            var nearbyPieces = new List<Piece>();
-            Piece.GetAllPiecesInRadius(ghost.transform.position, 4f, nearbyPieces);
-
-            const float snapTolerance = 0.05f;
-
-            foreach (var placed in nearbyPieces)
-            {
-                if (placed == null || placed.gameObject == ghost) continue;
-
-                var placedSnaps = new List<Transform>();
-                placed.GetSnapPoints(placedSnaps);
-
-                foreach (var gs in ghostSnaps)
-                {
-                    foreach (var ps in placedSnaps)
-                    {
-                        float dist = Vector3.Distance(gs.position, ps.position);
-                        if (dist < snapTolerance)
-                        {
-                            if (debugLog)
-                                DebugLog($"  Snap match: ghost '{gs.name}' <-> placed '{placed.gameObject.name}/{ps.name}' dist={dist:F4}");
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            return false;
         }
 
         private static void SnapToGrid(GameObject ghost, Piece piece, bool debugLog)
