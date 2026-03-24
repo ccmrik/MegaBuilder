@@ -237,121 +237,25 @@ namespace MegaBuilder
         private static void SnapToGrid(GameObject ghost, Piece piece, bool debugLog)
         {
             var pos = ghost.transform.position;
-            var rot = ghost.transform.rotation;
-            var invRot = Quaternion.Inverse(rot);
+            float gridSize = _defaultAlignment / 100f;
 
-            // Convert to local space
-            var localPos = invRot * pos;
+            var preSnap = pos;
 
-            // Determine alignment per axis from snap points or default
-            float alignX, alignY, alignZ;
-            float offsetX, offsetY, offsetZ;
-
-            ComputeAlignment(piece, debugLog, out alignX, out alignY, out alignZ,
-                             out offsetX, out offsetY, out offsetZ);
-
-            var preSnap = localPos;
-
-            // Snap each axis
-            if (alignX > 0f)
-                localPos.x = SnapAxis(localPos.x, alignX, offsetX);
-            if (alignY > 0f)
-                localPos.y = SnapAxis(localPos.y, alignY, offsetY);
-            if (alignZ > 0f)
-                localPos.z = SnapAxis(localPos.z, alignZ, offsetZ);
+            // Snap directly in world space — fixed grid, no rotation weirdness
+            pos.x = Mathf.Round(pos.x / gridSize) * gridSize;
+            pos.y = Mathf.Round(pos.y / gridSize) * gridSize;
+            pos.z = Mathf.Round(pos.z / gridSize) * gridSize;
 
             if (debugLog)
             {
-                DebugLog($"  Snap align: X={alignX:F3} Y={alignY:F3} Z={alignZ:F3} | Offset: X={offsetX:F3} Y={offsetY:F3} Z={offsetZ:F3}");
-                DebugLog($"  Local pre-snap:  ({preSnap.x:F3}, {preSnap.y:F3}, {preSnap.z:F3})");
-                DebugLog($"  Local post-snap: ({localPos.x:F3}, {localPos.y:F3}, {localPos.z:F3})");
-                var delta = localPos - preSnap;
+                DebugLog($"  Grid size: {gridSize:F3}");
+                DebugLog($"  World pre-snap:  ({preSnap.x:F3}, {preSnap.y:F3}, {preSnap.z:F3})");
+                DebugLog($"  World post-snap: ({pos.x:F3}, {pos.y:F3}, {pos.z:F3})");
+                var delta = pos - preSnap;
                 DebugLog($"  Delta: ({delta.x:F3}, {delta.y:F3}, {delta.z:F3}) magnitude={delta.magnitude:F3}");
             }
 
-            // Convert back to world space
-            ghost.transform.position = rot * localPos;
-
-            if (debugLog)
-                DebugLog($"  Final world pos: ({ghost.transform.position.x:F3}, {ghost.transform.position.y:F3}, {ghost.transform.position.z:F3})");
-        }
-
-        private static float SnapAxis(float value, float alignment, float offset)
-        {
-            value -= offset;
-            value = Mathf.Round(value / alignment) * alignment;
-            value += offset;
-            return value;
-        }
-
-        private static void ComputeAlignment(Piece piece, bool debugLog,
-            out float alignX, out float alignY, out float alignZ,
-            out float offsetX, out float offsetY, out float offsetZ)
-        {
-            float defaultAlign = _defaultAlignment / 100f;
-
-            // Try to derive alignment from snap points
-            List<Transform> snapPoints = new List<Transform>();
-            piece.GetSnapPoints(snapPoints);
-
-            if (snapPoints.Count >= 2)
-            {
-                // Calculate bounding box from snap points in local space
-                var invRot = Quaternion.Inverse(piece.transform.rotation);
-                var pieceWorldPos = piece.transform.position;
-
-                float minX = float.MaxValue, maxX = float.MinValue;
-                float minY = float.MaxValue, maxY = float.MinValue;
-                float minZ = float.MaxValue, maxZ = float.MinValue;
-
-                foreach (var sp in snapPoints)
-                {
-                    var local = invRot * (sp.position - pieceWorldPos);
-                    if (local.x < minX) minX = local.x;
-                    if (local.x > maxX) maxX = local.x;
-                    if (local.y < minY) minY = local.y;
-                    if (local.y > maxY) maxY = local.y;
-                    if (local.z < minZ) minZ = local.z;
-                    if (local.z > maxZ) maxZ = local.z;
-                }
-
-                alignX = QuantizeAlignment(maxX - minX, defaultAlign);
-                alignY = QuantizeAlignment(maxY - minY, defaultAlign);
-                alignZ = QuantizeAlignment(maxZ - minZ, defaultAlign);
-
-                offsetX = maxX;
-                offsetY = maxY;
-                offsetZ = maxZ;
-
-                if (debugLog)
-                {
-                    DebugLog($"  Snap bbox: X=[{minX:F3},{maxX:F3}] Y=[{minY:F3},{maxY:F3}] Z=[{minZ:F3},{maxZ:F3}]");
-                    DebugLog($"  Snap sizes: X={maxX - minX:F3} Y={maxY - minY:F3} Z={maxZ - minZ:F3}");
-                    DebugLog($"  Quantized: X={alignX:F3} Y={alignY:F3} Z={alignZ:F3}");
-                }
-            }
-            else
-            {
-                // No snap points — use default grid size for all axes
-                alignX = defaultAlign;
-                alignY = defaultAlign;
-                alignZ = defaultAlign;
-                offsetX = 0f;
-                offsetY = 0f;
-                offsetZ = 0f;
-
-                if (debugLog)
-                    DebugLog($"  No snap points (count={snapPoints.Count}), using default align: {defaultAlign:F3}");
-            }
-        }
-
-        private static float QuantizeAlignment(float size, float defaultAlign)
-        {
-            if (size <= 0.01f) return defaultAlign;
-            if (size <= 0.5f) return 0.5f;
-            if (size <= 1f) return 1f;
-            if (size <= 2f) return 2f;
-            return 4f;
+            ghost.transform.position = pos;
         }
     }
 }
