@@ -16,6 +16,12 @@ namespace MegaBuilder
         private static readonly FieldInfo _placementGhostField =
             AccessTools.Field(typeof(Player), "m_placementGhost");
 
+        // Saved vanilla position for doors — captured right after vanilla's method,
+        // before other mods (e.g. PerfectPlacement) can grid-snap it
+        private static Vector3 _savedDoorPosition;
+        private static Quaternion _savedDoorRotation;
+        private static bool _hasSavedDoorPosition;
+
         // Throttle debug logging to avoid spam (log every N frames while holding piece)
         private static int _debugFrameCounter;
         private static string _lastGhostName;
@@ -59,12 +65,41 @@ namespace MegaBuilder
             }
         }
 
+        /// <summary>
+        /// FIRST postfix — runs immediately after vanilla's UpdatePlacementGhost,
+        /// before other mods (like PerfectPlacement) can modify the position.
+        /// Captures the vanilla snap position for doors so we can restore it later.
+        /// </summary>
         [HarmonyPatch(typeof(Player), "UpdatePlacementGhost")]
         [HarmonyPostfix]
-        private static void UpdatePlacementGhost_Postfix(Player __instance)
+        [HarmonyPriority(Priority.First)]
+        private static void UpdatePlacementGhost_SaveVanilla(Player __instance)
         {
-            if (!MegaBuilderPlugin.EnableGridAlignment.Value) return;
-            if (!_alignToggled) return;
+            _hasSavedDoorPosition = false;
+            if (__instance != Player.m_localPlayer) return;
+
+            var ghost = _placementGhostField?.GetValue(__instance) as GameObject;
+            if (ghost == null || !ghost.activeSelf) return;
+
+            if (ghost.GetComponentInChildren<Door>() != null)
+            {
+                _savedDoorPosition = ghost.transform.position;
+                _savedDoorRotation = ghost.transform.rotation;
+                _hasSavedDoorPosition = true;
+                DebugLog($"[SaveVanilla] Saved door pos: ({_savedDoorPosition.x:F3}, {_savedDoorPosition.y:F3}, {_savedDoorPosition.z:F3})");
+            }
+        }
+
+        /// <summary>
+        /// LAST postfix — runs after ALL other mods' postfixes on UpdatePlacementGhost.
+        /// For doors: restores the vanilla snap position (undoing PerfectPlacement etc.)
+        /// For other pieces: applies MegaBuilder's grid alignment.
+        /// </summary>
+        [HarmonyPatch(typeof(Player), "UpdatePlacementGhost")]
+        [HarmonyPostfix]
+        [HarmonyPriority(Priority.Last)]
+        private static void UpdatePlacementGhost_ApplyGrid(Player __instance)
+        {
             if (__instance != Player.m_localPlayer) return;
 
             var ghost = _placementGhostField?.GetValue(__instance) as GameObject;
@@ -93,23 +128,19 @@ namespace MegaBuilder
 
             if (shouldLogDetails)
             {
-                // Log all components on the ghost for diagnosing what type of piece this is
                 var components = ghost.GetComponents<Component>();
                 var componentNames = string.Join(", ", components.Select(c => c.GetType().Name));
                 DebugLog($"Ghost: '{ghost.name}' | Components: [{componentNames}]");
 
-                // Check children too
                 var childComponents = ghost.GetComponentsInChildren<Component>(true);
                 var uniqueChildTypes = new HashSet<string>();
                 foreach (var c in childComponents)
                     uniqueChildTypes.Add(c.GetType().Name);
                 DebugLog($"  All child component types: [{string.Join(", ", uniqueChildTypes)}]");
 
-                // Door detection
                 var doorComp = ghost.GetComponentInChildren<Door>();
                 DebugLog($"  Door component: {(doorComp != null ? $"FOUND on '{doorComp.gameObject.name}'" : "NOT FOUND")}");
 
-                // Snap points
                 var snapPoints = new List<Transform>();
                 piece.GetSnapPoints(snapPoints);
                 DebugLog($"  Snap points: {snapPoints.Count}");
@@ -119,21 +150,34 @@ namespace MegaBuilder
                     DebugLog($"    Snap point '{sp.name}': local=({localPos.x:F3}, {localPos.y:F3}, {localPos.z:F3})");
                 }
 
-                // IsAimingAtPiece check
                 bool aimingAtPiece = IsAimingAtPiece(true);
                 DebugLog($"  IsAimingAtPiece: {aimingAtPiece}");
-                DebugLog($"  Ghost position: ({ghost.transform.position.x:F3}, {ghost.transform.position.y:F3}, {ghost.transform.position.z:F3})");
+                DebugLog($"  Ghost position (post-all-mods): ({ghost.transform.position.x:F3}, {ghost.transform.position.y:F3}, {ghost.transform.position.z:F3})");
                 DebugLog($"  Ghost rotation: ({ghost.transform.rotation.eulerAngles.x:F1}, {ghost.transform.rotation.eulerAngles.y:F1}, {ghost.transform.rotation.eulerAngles.z:F1})");
+                if (_hasSavedDoorPosition)
+                    DebugLog($"  Saved vanilla door pos: ({_savedDoorPosition.x:F3}, {_savedDoorPosition.y:F3}, {_savedDoorPosition.z:F3})");
             }
 
-            // Skip grid snapping for doors — they rely on vanilla's snap-point system
-            // to attach to doorframes. The IsAimingAtPiece raycast passes through doorway
-            // openings (no collider), causing grid snap to override correct placement.
-            if (ghost.GetComponentInChildren<Door>() != null)
+            // DOORS: Restore vanilla's snap position, undoing any modifications
+            // from other mods (e.g. PerfectPlacement's grid alignment).
+            // The vanilla position was captured in the Priority.First postfix before
+            // other mods had a chance to modify it.
+            if (_hasSavedDoorPosition && ghost.GetComponentInChildren<Door>() != null)
             {
-                if (shouldLogDetails) DebugLog($"  >> SKIPPED: Door component detected, using vanilla snapping");
+                var preRestore = ghost.transform.position;
+                ghost.transform.position = _savedDoorPosition;
+                ghost.transform.rotation = _savedDoorRotation;
+                if (shouldLogDetails)
+                {
+                    var delta = preRestore - _savedDoorPosition;
+                    DebugLog($"  >> DOOR RESTORED: vanilla pos restored (other mod moved it by {delta.magnitude:F3}m)");
+                }
                 return;
             }
+
+            // Non-door pieces: apply MegaBuilder grid alignment if enabled
+            if (!MegaBuilderPlugin.EnableGridAlignment.Value) return;
+            if (!_alignToggled) return;
 
             // Skip grid snapping when the player is aiming at an existing build piece.
             // This lets vanilla handle all piece-to-piece connections (corners, walls, etc.)

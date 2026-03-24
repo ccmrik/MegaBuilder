@@ -12,7 +12,7 @@ namespace MegaBuilder
     {
         public const string PluginGUID = "com.rik.megabuilder";
         public const string PluginName = "Mega Builder";
-        public const string PluginVersion = "1.0.5";
+        public const string PluginVersion = "1.0.6";
 
         internal static ManualLogSource Log;
         private static Harmony _harmony;
