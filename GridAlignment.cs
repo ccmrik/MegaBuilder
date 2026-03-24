@@ -150,8 +150,8 @@ namespace MegaBuilder
                     DebugLog($"    Snap point '{sp.name}': local=({localPos.x:F3}, {localPos.y:F3}, {localPos.z:F3})");
                 }
 
-                bool aimingAtPiece = IsAimingAtPiece(true);
-                DebugLog($"  IsAimingAtPiece: {aimingAtPiece}");
+                bool snappedToPiece = IsGhostSnappedToPiece(ghost, piece, true);
+                DebugLog($"  IsGhostSnappedToPiece: {snappedToPiece}");
                 DebugLog($"  Ghost position (post-all-mods): ({ghost.transform.position.x:F3}, {ghost.transform.position.y:F3}, {ghost.transform.position.z:F3})");
                 DebugLog($"  Ghost rotation: ({ghost.transform.rotation.eulerAngles.x:F1}, {ghost.transform.rotation.eulerAngles.y:F1}, {ghost.transform.rotation.eulerAngles.z:F1})");
                 if (_hasSavedDoorPosition)
@@ -179,12 +179,13 @@ namespace MegaBuilder
             if (!MegaBuilderPlugin.EnableGridAlignment.Value) return;
             if (!_alignToggled) return;
 
-            // Skip grid snapping when the player is aiming at an existing build piece.
-            // This lets vanilla handle all piece-to-piece connections (corners, walls, etc.)
-            // and only applies grid snapping when building in open space.
-            if (IsAimingAtPiece(false))
+            // Skip grid snapping when vanilla has snap-connected this ghost to an
+            // existing piece's snap point. This preserves wall-to-wall, corner, etc.
+            // connections while allowing grid snapping when building near (but not
+            // snapped to) existing pieces.
+            if (IsGhostSnappedToPiece(ghost, piece, shouldLogDetails))
             {
-                if (shouldLogDetails) DebugLog($"  >> SKIPPED: Aiming at existing piece, using vanilla snapping");
+                if (shouldLogDetails) DebugLog($"  >> SKIPPED: Ghost snap-connected to existing piece, using vanilla snapping");
                 return;
             }
 
@@ -192,24 +193,45 @@ namespace MegaBuilder
             SnapToGrid(ghost, piece, shouldLogDetails);
         }
 
-        private static bool IsAimingAtPiece(bool debugLog)
+        /// <summary>
+        /// Check if the ghost piece's snap points are aligned with any nearby
+        /// placed piece's snap points. If so, vanilla has snap-connected them
+        /// and we should not override with grid alignment.
+        /// </summary>
+        private static bool IsGhostSnappedToPiece(GameObject ghost, Piece ghostPiece, bool debugLog)
         {
-            var cam = GameCamera.instance;
-            if (cam == null) return false;
+            var ghostSnaps = new List<Transform>();
+            ghostPiece.GetSnapPoints(ghostSnaps);
+            if (ghostSnaps.Count == 0) return false;
 
-            int pieceMask = LayerMask.GetMask("piece", "piece_nonsolid");
-            RaycastHit hit;
-            bool result = Physics.Raycast(cam.transform.position, cam.transform.forward, out hit, 50f, pieceMask);
+            var nearbyPieces = new List<Piece>();
+            Piece.GetAllPiecesInRadius(ghost.transform.position, 4f, nearbyPieces);
 
-            if (debugLog && Debug)
+            const float snapTolerance = 0.05f;
+
+            foreach (var placed in nearbyPieces)
             {
-                if (result)
-                    DebugLog($"  Raycast HIT: '{hit.collider.gameObject.name}' at dist={hit.distance:F2} layer={LayerMask.LayerToName(hit.collider.gameObject.layer)}");
-                else
-                    DebugLog($"  Raycast MISS: no piece hit within 50m");
+                if (placed == null || placed.gameObject == ghost) continue;
+
+                var placedSnaps = new List<Transform>();
+                placed.GetSnapPoints(placedSnaps);
+
+                foreach (var gs in ghostSnaps)
+                {
+                    foreach (var ps in placedSnaps)
+                    {
+                        float dist = Vector3.Distance(gs.position, ps.position);
+                        if (dist < snapTolerance)
+                        {
+                            if (debugLog)
+                                DebugLog($"  Snap match: ghost '{gs.name}' <-> placed '{placed.gameObject.name}/{ps.name}' dist={dist:F4}");
+                            return true;
+                        }
+                    }
+                }
             }
 
-            return result;
+            return false;
         }
 
         private static void SnapToGrid(GameObject ghost, Piece piece, bool debugLog)
