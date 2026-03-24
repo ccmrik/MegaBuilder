@@ -12,12 +12,6 @@ namespace MegaBuilder
         private static int _defaultAlignment = 100; // centimeters: 50=0.5, 100=1, 200=2, 400=4
         private static readonly int[] AlignmentSteps = { 50, 100, 200, 400 };
 
-        // Reusable buffers to avoid per-frame GC allocations
-        private static readonly Collider[] _overlapBuffer = new Collider[128];
-        private static readonly List<Transform> _ghostSnapBuffer = new List<Transform>();
-        private static readonly List<Transform> _nearbySnapBuffer = new List<Transform>();
-        private static readonly HashSet<int> _checkedPieceIds = new HashSet<int>();
-
         private static readonly FieldInfo _placementGhostField =
             AccessTools.Field(typeof(Player), "m_placementGhost");
 
@@ -65,51 +59,21 @@ namespace MegaBuilder
             var piece = ghost.GetComponent<Piece>();
             if (piece == null) return;
 
-            // Skip grid snapping when vanilla has snapped to an existing piece's snap point.
-            // This preserves proper piece connections, door alignment, and corner attachment.
-            if (IsSnappedToExistingPiece(ghost, piece)) return;
+            // Skip grid snapping when the player is aiming at an existing build piece.
+            // This lets vanilla handle all piece-to-piece connections (doors, corners, walls)
+            // and only applies grid snapping when building in open space.
+            if (IsAimingAtPiece()) return;
 
             SnapToGrid(ghost, piece);
         }
 
-        private static bool IsSnappedToExistingPiece(GameObject ghost, Piece piece)
+        private static bool IsAimingAtPiece()
         {
-            const float snapTolerance = 0.1f;
-
-            _ghostSnapBuffer.Clear();
-            piece.GetSnapPoints(_ghostSnapBuffer);
-            if (_ghostSnapBuffer.Count == 0) return false;
+            var cam = GameCamera.instance;
+            if (cam == null) return false;
 
             int pieceMask = LayerMask.GetMask("piece", "piece_nonsolid");
-            int count = Physics.OverlapSphereNonAlloc(
-                ghost.transform.position, 6f, _overlapBuffer, pieceMask);
-
-            _checkedPieceIds.Clear();
-
-            for (int i = 0; i < count; i++)
-            {
-                var col = _overlapBuffer[i];
-                if (col == null) continue;
-
-                var nearbyPiece = col.GetComponentInParent<Piece>();
-                if (nearbyPiece == null) continue;
-                if (!_checkedPieceIds.Add(nearbyPiece.GetInstanceID())) continue;
-                if (nearbyPiece.gameObject == ghost) continue;
-
-                _nearbySnapBuffer.Clear();
-                nearbyPiece.GetSnapPoints(_nearbySnapBuffer);
-
-                foreach (var gs in _ghostSnapBuffer)
-                {
-                    foreach (var ns in _nearbySnapBuffer)
-                    {
-                        if (Vector3.Distance(gs.position, ns.position) < snapTolerance)
-                            return true;
-                    }
-                }
-            }
-
-            return false;
+            return Physics.Raycast(cam.transform.position, cam.transform.forward, 50f, pieceMask);
         }
 
         private static void SnapToGrid(GameObject ghost, Piece piece)
