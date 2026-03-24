@@ -1,5 +1,6 @@
 using HarmonyLib;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using UnityEngine;
 
@@ -14,6 +15,17 @@ namespace MegaBuilder
 
         private static readonly FieldInfo _placementGhostField =
             AccessTools.Field(typeof(Player), "m_placementGhost");
+
+        // Throttle debug logging to avoid spam (log every N frames while holding piece)
+        private static int _debugFrameCounter;
+        private static string _lastGhostName;
+
+        private static bool Debug => MegaBuilderPlugin.DebugMode.Value;
+
+        private static void DebugLog(string msg)
+        {
+            if (Debug) MegaBuilderPlugin.Log.LogInfo($"[GridAlign] {msg}");
+        }
 
         [HarmonyPatch(typeof(Player), "Update")]
         [HarmonyPostfix]
@@ -32,6 +44,7 @@ namespace MegaBuilder
                 string state = _alignToggled ? "ON" : "OFF";
                 __instance.Message(MessageHud.MessageType.TopLeft,
                     $"Grid alignment: {state} (size: {_defaultAlignment / 100f})");
+                DebugLog($"Grid alignment toggled: {state}");
             }
 
             // F6 - Cycle grid size
@@ -42,6 +55,7 @@ namespace MegaBuilder
                 _defaultAlignment = AlignmentSteps[idx];
                 __instance.Message(MessageHud.MessageType.TopLeft,
                     $"Grid size: {_defaultAlignment / 100f}");
+                DebugLog($"Grid size cycled to: {_defaultAlignment / 100f}");
             }
         }
 
@@ -59,29 +73,102 @@ namespace MegaBuilder
             var piece = ghost.GetComponent<Piece>();
             if (piece == null) return;
 
+            // Throttle debug: log details when piece changes or every 60 frames
+            bool shouldLogDetails = false;
+            if (Debug)
+            {
+                _debugFrameCounter++;
+                string currentName = ghost.name;
+                if (currentName != _lastGhostName)
+                {
+                    _lastGhostName = currentName;
+                    _debugFrameCounter = 0;
+                    shouldLogDetails = true;
+                }
+                else if (_debugFrameCounter % 60 == 0)
+                {
+                    shouldLogDetails = true;
+                }
+            }
+
+            if (shouldLogDetails)
+            {
+                // Log all components on the ghost for diagnosing what type of piece this is
+                var components = ghost.GetComponents<Component>();
+                var componentNames = string.Join(", ", components.Select(c => c.GetType().Name));
+                DebugLog($"Ghost: '{ghost.name}' | Components: [{componentNames}]");
+
+                // Check children too
+                var childComponents = ghost.GetComponentsInChildren<Component>(true);
+                var uniqueChildTypes = new HashSet<string>();
+                foreach (var c in childComponents)
+                    uniqueChildTypes.Add(c.GetType().Name);
+                DebugLog($"  All child component types: [{string.Join(", ", uniqueChildTypes)}]");
+
+                // Door detection
+                var doorComp = ghost.GetComponentInChildren<Door>();
+                DebugLog($"  Door component: {(doorComp != null ? $"FOUND on '{doorComp.gameObject.name}'" : "NOT FOUND")}");
+
+                // Snap points
+                var snapPoints = new List<Transform>();
+                piece.GetSnapPoints(snapPoints);
+                DebugLog($"  Snap points: {snapPoints.Count}");
+                foreach (var sp in snapPoints)
+                {
+                    var localPos = Quaternion.Inverse(piece.transform.rotation) * (sp.position - piece.transform.position);
+                    DebugLog($"    Snap point '{sp.name}': local=({localPos.x:F3}, {localPos.y:F3}, {localPos.z:F3})");
+                }
+
+                // IsAimingAtPiece check
+                bool aimingAtPiece = IsAimingAtPiece(true);
+                DebugLog($"  IsAimingAtPiece: {aimingAtPiece}");
+                DebugLog($"  Ghost position: ({ghost.transform.position.x:F3}, {ghost.transform.position.y:F3}, {ghost.transform.position.z:F3})");
+                DebugLog($"  Ghost rotation: ({ghost.transform.rotation.eulerAngles.x:F1}, {ghost.transform.rotation.eulerAngles.y:F1}, {ghost.transform.rotation.eulerAngles.z:F1})");
+            }
+
             // Skip grid snapping for doors — they rely on vanilla's snap-point system
             // to attach to doorframes. The IsAimingAtPiece raycast passes through doorway
             // openings (no collider), causing grid snap to override correct placement.
-            if (ghost.GetComponentInChildren<Door>() != null) return;
+            if (ghost.GetComponentInChildren<Door>() != null)
+            {
+                if (shouldLogDetails) DebugLog($"  >> SKIPPED: Door component detected, using vanilla snapping");
+                return;
+            }
 
             // Skip grid snapping when the player is aiming at an existing build piece.
             // This lets vanilla handle all piece-to-piece connections (corners, walls, etc.)
             // and only applies grid snapping when building in open space.
-            if (IsAimingAtPiece()) return;
+            if (IsAimingAtPiece(false))
+            {
+                if (shouldLogDetails) DebugLog($"  >> SKIPPED: Aiming at existing piece, using vanilla snapping");
+                return;
+            }
 
-            SnapToGrid(ghost, piece);
+            if (shouldLogDetails) DebugLog($"  >> APPLYING grid snap (default align: {_defaultAlignment / 100f})");
+            SnapToGrid(ghost, piece, shouldLogDetails);
         }
 
-        private static bool IsAimingAtPiece()
+        private static bool IsAimingAtPiece(bool debugLog)
         {
             var cam = GameCamera.instance;
             if (cam == null) return false;
 
             int pieceMask = LayerMask.GetMask("piece", "piece_nonsolid");
-            return Physics.Raycast(cam.transform.position, cam.transform.forward, 50f, pieceMask);
+            RaycastHit hit;
+            bool result = Physics.Raycast(cam.transform.position, cam.transform.forward, out hit, 50f, pieceMask);
+
+            if (debugLog && Debug)
+            {
+                if (result)
+                    DebugLog($"  Raycast HIT: '{hit.collider.gameObject.name}' at dist={hit.distance:F2} layer={LayerMask.LayerToName(hit.collider.gameObject.layer)}");
+                else
+                    DebugLog($"  Raycast MISS: no piece hit within 50m");
+            }
+
+            return result;
         }
 
-        private static void SnapToGrid(GameObject ghost, Piece piece)
+        private static void SnapToGrid(GameObject ghost, Piece piece, bool debugLog)
         {
             var pos = ghost.transform.position;
             var rot = ghost.transform.rotation;
@@ -94,8 +181,10 @@ namespace MegaBuilder
             float alignX, alignY, alignZ;
             float offsetX, offsetY, offsetZ;
 
-            ComputeAlignment(piece, out alignX, out alignY, out alignZ,
+            ComputeAlignment(piece, debugLog, out alignX, out alignY, out alignZ,
                              out offsetX, out offsetY, out offsetZ);
+
+            var preSnap = localPos;
 
             // Snap each axis
             if (alignX > 0f)
@@ -105,8 +194,20 @@ namespace MegaBuilder
             if (alignZ > 0f)
                 localPos.z = SnapAxis(localPos.z, alignZ, offsetZ);
 
+            if (debugLog)
+            {
+                DebugLog($"  Snap align: X={alignX:F3} Y={alignY:F3} Z={alignZ:F3} | Offset: X={offsetX:F3} Y={offsetY:F3} Z={offsetZ:F3}");
+                DebugLog($"  Local pre-snap:  ({preSnap.x:F3}, {preSnap.y:F3}, {preSnap.z:F3})");
+                DebugLog($"  Local post-snap: ({localPos.x:F3}, {localPos.y:F3}, {localPos.z:F3})");
+                var delta = localPos - preSnap;
+                DebugLog($"  Delta: ({delta.x:F3}, {delta.y:F3}, {delta.z:F3}) magnitude={delta.magnitude:F3}");
+            }
+
             // Convert back to world space
             ghost.transform.position = rot * localPos;
+
+            if (debugLog)
+                DebugLog($"  Final world pos: ({ghost.transform.position.x:F3}, {ghost.transform.position.y:F3}, {ghost.transform.position.z:F3})");
         }
 
         private static float SnapAxis(float value, float alignment, float offset)
@@ -117,7 +218,7 @@ namespace MegaBuilder
             return value;
         }
 
-        private static void ComputeAlignment(Piece piece,
+        private static void ComputeAlignment(Piece piece, bool debugLog,
             out float alignX, out float alignY, out float alignZ,
             out float offsetX, out float offsetY, out float offsetZ)
         {
@@ -155,6 +256,13 @@ namespace MegaBuilder
                 offsetX = maxX;
                 offsetY = maxY;
                 offsetZ = maxZ;
+
+                if (debugLog)
+                {
+                    DebugLog($"  Snap bbox: X=[{minX:F3},{maxX:F3}] Y=[{minY:F3},{maxY:F3}] Z=[{minZ:F3},{maxZ:F3}]");
+                    DebugLog($"  Snap sizes: X={maxX - minX:F3} Y={maxY - minY:F3} Z={maxZ - minZ:F3}");
+                    DebugLog($"  Quantized: X={alignX:F3} Y={alignY:F3} Z={alignZ:F3}");
+                }
             }
             else
             {
@@ -165,6 +273,9 @@ namespace MegaBuilder
                 offsetX = 0f;
                 offsetY = 0f;
                 offsetZ = 0f;
+
+                if (debugLog)
+                    DebugLog($"  No snap points (count={snapPoints.Count}), using default align: {defaultAlign:F3}");
             }
         }
 
