@@ -188,14 +188,34 @@ namespace MegaBuilder
 
             var preSnap = pos;
 
-            // Snap directly in world space — fixed grid, no rotation weirdness
-            pos.x = Mathf.Round(pos.x / gridSize) * gridSize;
-            pos.y = Mathf.Round(pos.y / gridSize) * gridSize;
-            pos.z = Mathf.Round(pos.z / gridSize) * gridSize;
+            // Find the snap point offset from the piece origin so we snap
+            // the snap points to the grid, not the pivot (which varies per piece).
+            // This ensures adjacent pieces' snap points align perfectly.
+            Vector3 snapOffset = Vector3.zero;
+            var snapPoints = new List<Transform>();
+            piece.GetSnapPoints(snapPoints);
+            if (snapPoints.Count > 0)
+            {
+                // Use the first snap point's world-space offset from the piece origin
+                snapOffset = snapPoints[0].position - pos;
+            }
+
+            // Calculate where the reference snap point currently is
+            Vector3 snapWorldPos = pos + snapOffset;
+
+            // Snap that point to the grid (XZ only — leave Y to vanilla/terrain)
+            Vector3 snappedSnapPos;
+            snappedSnapPos.x = Mathf.Round(snapWorldPos.x / gridSize) * gridSize;
+            snappedSnapPos.y = snapWorldPos.y; // preserve vanilla Y
+            snappedSnapPos.z = Mathf.Round(snapWorldPos.z / gridSize) * gridSize;
+
+            // Move the piece so the snap point lands on the grid
+            pos = snappedSnapPos - snapOffset;
 
             if (debugLog)
             {
                 DebugLog($"  Grid size: {gridSize:F3}");
+                DebugLog($"  Snap offset: ({snapOffset.x:F3}, {snapOffset.y:F3}, {snapOffset.z:F3})");
                 DebugLog($"  World pre-snap:  ({preSnap.x:F3}, {preSnap.y:F3}, {preSnap.z:F3})");
                 DebugLog($"  World post-snap: ({pos.x:F3}, {pos.y:F3}, {pos.z:F3})");
                 var delta = pos - preSnap;
