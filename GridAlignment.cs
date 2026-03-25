@@ -183,46 +183,52 @@ namespace MegaBuilder
 
         private static void SnapToGrid(GameObject ghost, Piece piece, bool debugLog)
         {
-            var pos = ghost.transform.position;
             float gridSize = _defaultAlignment / 100f;
 
-            var preSnap = pos;
+            // Raycast from the camera to find the raw point the player is looking at.
+            // This bypasses vanilla's snap-point matching that shifts the ghost around.
+            var cam = GameCamera.instance;
+            if (cam == null) return;
 
-            // Find the snap point offset from the piece origin so we snap
-            // the snap points to the grid, not the pivot (which varies per piece).
-            // This ensures adjacent pieces' snap points align perfectly.
+            int mask = LayerMask.GetMask("Default", "static_solid", "Default_small",
+                "piece", "piece_nonsolid", "terrain", "vehicle");
+            RaycastHit hit;
+            if (!Physics.Raycast(cam.transform.position, cam.transform.forward, out hit, 50f, mask))
+                return;
+
+            // Start from the raw raycast hit point
+            Vector3 basePos = hit.point;
+
+            // Offset for the piece's snap point so snap points land on the grid
             Vector3 snapOffset = Vector3.zero;
             var snapPoints = new List<Transform>();
             piece.GetSnapPoints(snapPoints);
             if (snapPoints.Count > 0)
             {
-                // Use the first snap point's world-space offset from the piece origin
-                snapOffset = snapPoints[0].position - pos;
+                // Snap point offset from piece origin in world space
+                snapOffset = snapPoints[0].position - ghost.transform.position;
             }
 
-            // Calculate where the reference snap point currently is
-            Vector3 snapWorldPos = pos + snapOffset;
+            // Snap the reference snap point to the grid (XZ only)
+            Vector3 snapWorldPos = basePos + snapOffset;
+            Vector3 snapped;
+            snapped.x = Mathf.Round(snapWorldPos.x / gridSize) * gridSize;
+            snapped.y = basePos.y; // use raycast Y (terrain/piece surface)
+            snapped.z = Mathf.Round(snapWorldPos.z / gridSize) * gridSize;
 
-            // Snap that point to the grid (XZ only — leave Y to vanilla/terrain)
-            Vector3 snappedSnapPos;
-            snappedSnapPos.x = Mathf.Round(snapWorldPos.x / gridSize) * gridSize;
-            snappedSnapPos.y = snapWorldPos.y; // preserve vanilla Y
-            snappedSnapPos.z = Mathf.Round(snapWorldPos.z / gridSize) * gridSize;
-
-            // Move the piece so the snap point lands on the grid
-            pos = snappedSnapPos - snapOffset;
+            // Position the piece so snap point lands on the grid
+            Vector3 finalPos = snapped - snapOffset;
+            finalPos.y = basePos.y; // ensure Y follows the surface
 
             if (debugLog)
             {
                 DebugLog($"  Grid size: {gridSize:F3}");
+                DebugLog($"  Raycast hit: ({basePos.x:F3}, {basePos.y:F3}, {basePos.z:F3}) on '{hit.collider.gameObject.name}'");
                 DebugLog($"  Snap offset: ({snapOffset.x:F3}, {snapOffset.y:F3}, {snapOffset.z:F3})");
-                DebugLog($"  World pre-snap:  ({preSnap.x:F3}, {preSnap.y:F3}, {preSnap.z:F3})");
-                DebugLog($"  World post-snap: ({pos.x:F3}, {pos.y:F3}, {pos.z:F3})");
-                var delta = pos - preSnap;
-                DebugLog($"  Delta: ({delta.x:F3}, {delta.y:F3}, {delta.z:F3}) magnitude={delta.magnitude:F3}");
+                DebugLog($"  Final pos:   ({finalPos.x:F3}, {finalPos.y:F3}, {finalPos.z:F3})");
             }
 
-            ghost.transform.position = pos;
+            ghost.transform.position = finalPos;
         }
     }
 }
