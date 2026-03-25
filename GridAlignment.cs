@@ -181,12 +181,84 @@ namespace MegaBuilder
             SnapToGrid(ghost, piece, shouldLogDetails);
         }
 
+        /// <summary>
+        /// Detects if vanilla snapped the ghost to a nearby piece's snap point.
+        /// Returns the piece-local axis index (0=X, 1=Y, 2=Z) that should NOT be
+        /// grid-snapped — the "depth" axis pointing toward the attachment surface.
+        /// </summary>
+        private static bool TryGetSnappedAxis(Piece ghostPiece, out int skipAxis, bool debugLog)
+        {
+            skipAxis = -1;
+
+            var ghostSnaps = new List<Transform>();
+            ghostPiece.GetSnapPoints(ghostSnaps);
+            if (ghostSnaps.Count == 0) return false;
+
+            var nearbyPieces = new List<Piece>();
+            Piece.GetAllPiecesInRadius(ghostPiece.transform.position, 4f, nearbyPieces);
+
+            float closestDist = float.MaxValue;
+            Transform closestGhostSnap = null;
+
+            foreach (var other in nearbyPieces)
+            {
+                if (other.gameObject == ghostPiece.gameObject) continue;
+
+                var otherSnaps = new List<Transform>();
+                other.GetSnapPoints(otherSnaps);
+
+                foreach (var gs in ghostSnaps)
+                {
+                    foreach (var os in otherSnaps)
+                    {
+                        float dist = Vector3.Distance(gs.position, os.position);
+                        if (dist < closestDist)
+                        {
+                            closestDist = dist;
+                            closestGhostSnap = gs;
+                        }
+                    }
+                }
+            }
+
+            // Only "snapped" if a snap point pair is very close (< 5cm)
+            if (closestDist > 0.05f || closestGhostSnap == null)
+            {
+                if (debugLog)
+                    DebugLog($"  No vanilla snap detected (closest pair dist: {(closestDist < 100f ? closestDist.ToString("F3") : "none")})");
+                return false;
+            }
+
+            // Direction from piece center to the matched snap point in local space
+            Vector3 worldDir = closestGhostSnap.position - ghostPiece.transform.position;
+            Vector3 localDir = Quaternion.Inverse(ghostPiece.transform.rotation) * worldDir;
+
+            // Dominant axis = the depth/attachment direction — skip grid-snapping it
+            float ax = Mathf.Abs(localDir.x);
+            float ay = Mathf.Abs(localDir.y);
+            float az = Mathf.Abs(localDir.z);
+
+            if (ax >= ay && ax >= az) skipAxis = 0;
+            else if (ay >= ax && ay >= az) skipAxis = 1;
+            else skipAxis = 2;
+
+            if (debugLog)
+            {
+                string axisName = skipAxis == 0 ? "X" : (skipAxis == 1 ? "Y" : "Z");
+                DebugLog($"  Vanilla snap detected! Dist: {closestDist:F4}m, " +
+                         $"local dir: ({localDir.x:F3},{localDir.y:F3},{localDir.z:F3}), " +
+                         $"preserving {axisName} axis (depth)");
+            }
+
+            return true;
+        }
+
         private static void SnapToGrid(GameObject ghost, Piece piece, bool debugLog)
         {
             // Based on PerfectPlacement's proven grid alignment algorithm:
             // 1. Convert world position to piece-local space (rotation-aware)
             // 2. Compute per-axis alignment from snap point bounding box
-            // 3. Round each axis to nearest grid increment
+            // 3. Round each axis to nearest grid increment (skip depth axis if snapped)
             // 4. Convert back to world space
 
             Vector3 pos = piece.transform.position;
@@ -198,24 +270,27 @@ namespace MegaBuilder
             // Get alignment sizes and offsets from snap points
             GetAlignment(piece, out Vector3 alignment, out Vector3 offset, debugLog);
 
+            // Detect if vanilla snapped to a nearby piece — preserve the depth axis
+            TryGetSnappedAxis(piece, out int skipAxis, debugLog);
+
             // Add offset so snapping aligns to snap point positions
             localPos += offset;
 
             // Save pre-snap for axes we won't touch
             Vector3 preSnap = localPos;
 
-            // Snap each axis that has a positive alignment
-            if (alignment.x > 0f)
+            // Snap each axis that has a positive alignment (skip attachment depth axis)
+            if (alignment.x > 0f && skipAxis != 0)
                 localPos.x = Mathf.Round(localPos.x / alignment.x) * alignment.x;
-            if (alignment.y > 0f)
+            if (alignment.y > 0f && skipAxis != 1)
                 localPos.y = Mathf.Round(localPos.y / alignment.y) * alignment.y;
-            if (alignment.z > 0f)
+            if (alignment.z > 0f && skipAxis != 2)
                 localPos.z = Mathf.Round(localPos.z / alignment.z) * alignment.z;
 
-            // Restore axes with zero alignment
-            if (alignment.x <= 0f) localPos.x = preSnap.x;
-            if (alignment.y <= 0f) localPos.y = preSnap.y;
-            if (alignment.z <= 0f) localPos.z = preSnap.z;
+            // Restore axes with zero alignment or skipped attachment axis
+            if (alignment.x <= 0f || skipAxis == 0) localPos.x = preSnap.x;
+            if (alignment.y <= 0f || skipAxis == 1) localPos.y = preSnap.y;
+            if (alignment.z <= 0f || skipAxis == 2) localPos.z = preSnap.z;
 
             // Remove offset
             localPos -= offset;
