@@ -199,52 +199,103 @@ namespace MegaBuilder
 
         private static void SnapToGrid(GameObject ghost, Piece piece, bool debugLog)
         {
-            float gridSize = _defaultAlignment / 100f;
+            // Based on PerfectPlacement's proven grid alignment algorithm:
+            // 1. Convert world position to piece-local space (rotation-aware)
+            // 2. Compute per-axis alignment from snap point bounding box
+            // 3. Round each axis to nearest grid increment
+            // 4. Convert back to world space
 
-            // Raycast from the camera to find the raw point the player is looking at.
-            // This bypasses vanilla's snap-point matching that shifts the ghost around.
-            var cam = GameCamera.instance;
-            if (cam == null) return;
+            Vector3 pos = piece.transform.position;
+            Quaternion rot = piece.transform.rotation;
 
-            int mask = LayerMask.GetMask("Default", "static_solid", "Default_small",
-                "piece", "piece_nonsolid", "terrain", "vehicle");
-            RaycastHit hit;
-            if (!Physics.Raycast(cam.transform.position, cam.transform.forward, out hit, 50f, mask))
-                return;
+            // Convert to piece-local space
+            Vector3 localPos = Quaternion.Inverse(rot) * pos;
 
-            // Start from the raw raycast hit point
-            Vector3 basePos = hit.point;
+            // Get alignment sizes and offsets from snap points
+            GetAlignment(piece, out Vector3 alignment, out Vector3 offset, debugLog);
 
-            // Offset for the piece's snap point so snap points land on the grid
-            Vector3 snapOffset = Vector3.zero;
-            var snapPoints = new List<Transform>();
-            piece.GetSnapPoints(snapPoints);
-            if (snapPoints.Count > 0)
-            {
-                // Snap point offset from piece origin in world space
-                snapOffset = snapPoints[0].position - ghost.transform.position;
-            }
+            // Add offset so snapping aligns to snap point positions
+            localPos += offset;
 
-            // Snap the reference snap point to the grid (XZ only)
-            Vector3 snapWorldPos = basePos + snapOffset;
-            Vector3 snapped;
-            snapped.x = Mathf.Round(snapWorldPos.x / gridSize) * gridSize;
-            snapped.y = basePos.y; // use raycast Y (terrain/piece surface)
-            snapped.z = Mathf.Round(snapWorldPos.z / gridSize) * gridSize;
+            // Save pre-snap for axes we won't touch
+            Vector3 preSnap = localPos;
 
-            // Position the piece so snap point lands on the grid
-            Vector3 finalPos = snapped - snapOffset;
-            finalPos.y = basePos.y; // ensure Y follows the surface
+            // Snap each axis that has a positive alignment
+            if (alignment.x > 0f)
+                localPos.x = Mathf.Round(localPos.x / alignment.x) * alignment.x;
+            if (alignment.y > 0f)
+                localPos.y = Mathf.Round(localPos.y / alignment.y) * alignment.y;
+            if (alignment.z > 0f)
+                localPos.z = Mathf.Round(localPos.z / alignment.z) * alignment.z;
+
+            // Restore axes with zero alignment
+            if (alignment.x <= 0f) localPos.x = preSnap.x;
+            if (alignment.y <= 0f) localPos.y = preSnap.y;
+            if (alignment.z <= 0f) localPos.z = preSnap.z;
+
+            // Remove offset
+            localPos -= offset;
+
+            // Convert back to world space
+            Vector3 finalPos = rot * localPos;
 
             if (debugLog)
             {
-                DebugLog($"  Grid size: {gridSize:F3}");
-                DebugLog($"  Raycast hit: ({basePos.x:F3}, {basePos.y:F3}, {basePos.z:F3}) on '{hit.collider.gameObject.name}'");
-                DebugLog($"  Snap offset: ({snapOffset.x:F3}, {snapOffset.y:F3}, {snapOffset.z:F3})");
-                DebugLog($"  Final pos:   ({finalPos.x:F3}, {finalPos.y:F3}, {finalPos.z:F3})");
+                DebugLog($"  Alignment: ({alignment.x:F3}, {alignment.y:F3}, {alignment.z:F3})");
+                DebugLog($"  Offset: ({offset.x:F3}, {offset.y:F3}, {offset.z:F3})");
+                DebugLog($"  Pre:  ({pos.x:F3}, {pos.y:F3}, {pos.z:F3})");
+                DebugLog($"  Post: ({finalPos.x:F3}, {finalPos.y:F3}, {finalPos.z:F3})");
             }
 
-            ghost.transform.position = finalPos;
+            piece.transform.position = finalPos;
+        }
+
+        private static float FixAlignment(float size)
+        {
+            int cm = (int)Mathf.Round(size * 100f);
+            if (cm <= 0) return _defaultAlignment / 100f;
+            if (cm <= 50) return 0.5f;
+            if (cm <= 100) return 1f;
+            if (cm <= 200) return 2f;
+            return 4f;
+        }
+
+        private static void GetAlignment(Piece piece, out Vector3 alignment, out Vector3 offset, bool debugLog)
+        {
+            List<Transform> points = new List<Transform>();
+            piece.GetSnapPoints(points);
+
+            if (points.Count > 0)
+            {
+                Vector3 min = Vector3.positiveInfinity;
+                Vector3 max = Vector3.negativeInfinity;
+                foreach (Transform point in points)
+                {
+                    Vector3 lp = point.localPosition;
+                    min = Vector3.Min(min, lp);
+                    max = Vector3.Max(max, lp);
+                }
+
+                Vector3 size = max - min;
+                alignment = new Vector3(FixAlignment(size.x), FixAlignment(size.y), FixAlignment(size.z));
+                offset = max; // align at top/max
+
+                if (debugLog)
+                {
+                    DebugLog($"  Snap bbox: min=({min.x:F3},{min.y:F3},{min.z:F3}) max=({max.x:F3},{max.y:F3},{max.z:F3})");
+                    DebugLog($"  Snap size: ({size.x:F3},{size.y:F3},{size.z:F3}) -> align: ({alignment.x:F3},{alignment.y:F3},{alignment.z:F3})");
+                }
+            }
+            else
+            {
+                // No snap points — use default grid for XZ, skip Y
+                float def = _defaultAlignment / 100f;
+                alignment = new Vector3(def, 0f, def);
+                offset = Vector3.zero;
+
+                if (debugLog)
+                    DebugLog($"  No snap points, using default: {def:F3} (Y=0, no Y snap)");
+            }
         }
     }
 }
