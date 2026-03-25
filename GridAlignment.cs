@@ -347,13 +347,34 @@ namespace MegaBuilder
             }
             else
             {
-                // No snap points — use default grid for all axes
-                float def = _defaultAlignment / 100f;
-                alignment = new Vector3(def, def, def);
-                offset = Vector3.zero;
+                // No snap points — furniture/decorations need special handling per PerfectPlacement.
+                // Key insight: DON'T snap the axis that attaches the piece to its surface,
+                // or the grid rounding will push it into/through the surface.
+
+                if (piece.m_notOnFloor || piece.name == "sign" || piece.name == "itemstand")
+                {
+                    // Wall-mounted pieces: snap X and Y, leave Z (depth into wall) alone
+                    alignment = new Vector3(0.5f, 0.5f, 0f);
+                    offset = Vector3.zero;
+                    if (piece.name == "sign")
+                        alignment.y = 0.25f;
+                }
+                else if (piece.name == "piece_walltorch")
+                {
+                    // Wall torch has a different orientation
+                    alignment = new Vector3(0f, 0.5f, 0.5f);
+                    offset = Vector3.zero;
+                }
+                else
+                {
+                    // Floor furniture (rugs, etc.): snap X and Z, leave Y (height) alone
+                    // so it stays ON the floor surface, not inside it
+                    alignment = new Vector3(0.5f, 0f, 0.5f);
+                    offset = Vector3.zero;
+                }
 
                 if (debugLog)
-                    DebugLog($"  No snap points, using default: {def:F3} (all axes)");
+                    DebugLog($"  No snap points, type: {(piece.m_notOnFloor ? "wall-mount" : "floor")} name: '{piece.name}' -> align: ({alignment.x:F1},{alignment.y:F1},{alignment.z:F1})");
             }
         }
     }
