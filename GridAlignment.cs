@@ -16,6 +16,10 @@ namespace MegaBuilder
         private static readonly FieldInfo _placementGhostField =
             AccessTools.Field(typeof(Player), "m_placementGhost");
 
+        // Tracks whether player pressed E to cycle snap points (vanilla snap lock)
+        private static readonly FieldInfo _manualSnapPointField =
+            AccessTools.Field(typeof(Player), "m_manualSnapPoint");
+
         // Saved vanilla position for doors — captured right after vanilla's method,
         // before other mods (e.g. PerfectPlacement) can grid-snap it
         private static Vector3 _savedDoorPosition;
@@ -176,6 +180,18 @@ namespace MegaBuilder
             // Non-door pieces: apply MegaBuilder grid alignment if enabled
             if (!MegaBuilderPlugin.EnableGridAlignment.Value) return;
             if (!_alignToggled) return;
+
+            // When the player has pressed E to cycle snap points ("Snapping: Top 1" etc),
+            // vanilla has a manual snap lock — respect it and don't override.
+            if (_manualSnapPointField != null)
+            {
+                int manualSnap = (int)_manualSnapPointField.GetValue(__instance);
+                if (manualSnap >= 0)
+                {
+                    if (shouldLogDetails) DebugLog($"  >> SKIPPED: Manual snap point active (index={manualSnap}), using vanilla E-snap");
+                    return;
+                }
+            }
 
             if (shouldLogDetails) DebugLog($"  >> APPLYING grid snap (grid size: {_defaultAlignment / 100f})");
             SnapToGrid(ghost, piece, shouldLogDetails);
